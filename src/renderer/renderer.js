@@ -99,6 +99,7 @@ let mute = extSettings ? extSettings.get_boolean('mute') : false;
 let nohide = false;
 let videoPath = extSettings ? extSettings.get_string('video-path') : '';
 let volume = extSettings ? extSettings.get_int('volume') / 100.0 : 0.5;
+let randomStartPosition = extSettings ? extSettings.get_boolean('random-start-position') : false;
 let changeWallpaper = extSettings ? extSettings.get_boolean('change-wallpaper') : true;
 let changeWallpaperDirectoryPath = extSettings ? extSettings.get_string('change-wallpaper-directory-path') : '';
 let changeWallpaperMode = extSettings ? extSettings.get_int('change-wallpaper-mode') : 0;
@@ -128,6 +129,7 @@ const HanabiRenderer = GObject.registerClass(
             this._sharedPaintable = null;
             this._gstImplName = '';
             this._isPlaying = false;
+            this._randomStartPending = true;
             this._exportDbus();
             this._setupGst();
 
@@ -167,6 +169,9 @@ const HanabiRenderer = GObject.registerClass(
                 case 'volume':
                     volume = settings.get_int(key) / 100.0;
                     this.setVolume(volume);
+                    break;
+                case 'random-start-position':
+                    randomStartPosition = settings.get_boolean(key);
                     break;
                 case 'change-wallpaper':
                     changeWallpaper = settings.get_boolean(key);
@@ -468,10 +473,15 @@ const HanabiRenderer = GObject.registerClass(
                     this._dbus.emit_signal('isPlayingChanged', new GLib.Variant('(b)', [this._isPlaying]));
                 }
             );
+            this._adapter.connect('state-changed', (_adapter, state) => {
+                if (state >= GstPlay.PlayState.PAUSED)
+                    this._maybeSeekRandomGst();
+            });
 
             let file = Gio.File.new_for_path(videoPath);
             this._play.set_uri(file.get_uri());
 
+            this._markRandomStartPending();
             this.setPlay();
             this.setAutoWallpaper();
 
@@ -491,6 +501,7 @@ const HanabiRenderer = GObject.registerClass(
             this._media.connect('notify::prepared', () => {
                 this.setVolume(volume);
                 this.setMute(mute);
+                this._maybeSeekRandomMedia();
             });
             // Monitor playing state.
             this._media.connect('notify::playing', media => {
@@ -501,6 +512,7 @@ const HanabiRenderer = GObject.registerClass(
             this._sharedPaintable = this._media;
             let widget = this._getWidgetFromSharedPaintable();
 
+            this._markRandomStartPending();
             this.setPlay();
             this.setAutoWallpaper();
 
@@ -585,6 +597,7 @@ const HanabiRenderer = GObject.registerClass(
                 this._media.stream_unprepared();
                 this._media.file = file;
             }
+            this._markRandomStartPending();
             this.setPlay();
         }
 
@@ -672,6 +685,42 @@ const HanabiRenderer = GObject.registerClass(
 
         get isPlaying() {
             return this._isPlaying;
+        }
+
+        _markRandomStartPending() {
+            this._randomStartPending = true;
+        }
+
+        _maybeSeekRandomGst() {
+            if (!this._play || !randomStartPosition || !this._randomStartPending)
+                return;
+
+            let duration = this._play.get_duration();
+            if (!duration || duration <= 0) {
+                this._randomStartPending = false;
+                return;
+            }
+
+            let maxPosition = Math.max(duration - (Gst.SECOND || 1000000000), 0);
+            let position = Math.floor(Math.random() * (maxPosition + 1));
+            this._play.seek(position);
+            this._randomStartPending = false;
+        }
+
+        _maybeSeekRandomMedia() {
+            if (!this._media || !randomStartPosition || !this._randomStartPending)
+                return;
+
+            let duration = this._media.get_duration();
+            if (!duration || duration <= 0) {
+                this._randomStartPending = false;
+                return;
+            }
+
+            let maxPosition = Math.max(duration - GLib.USEC_PER_SEC, 0);
+            let position = Math.floor(Math.random() * (maxPosition + 1));
+            this._media.seek(position);
+            this._randomStartPending = false;
         }
     }
 );
